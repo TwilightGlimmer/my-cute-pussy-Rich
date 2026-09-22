@@ -33,11 +33,40 @@ foreach($entry in @(@(1,2),@(2,3),@(3,2))){
  $blink.Freeze();$frames["0,$($entry[0])"]=$blink
 }
 $frames['0,4']=$stillFrame;$frames['0,5']=$stillFrame
+# Reuse registered gaze poses instead of the oversized review/failed heads.
+$lookSequence=@('0,0','9,4','9,4','0,0','10,4','0,0')
+$shySequence=@('0,0','9,7','10,0','10,0','10,0','9,7','0,0','0,0')
+for($i=0;$i -lt $lookSequence.Count;$i++){$frames["8,$i"]=$frames[$lookSequence[$i]]}
+for($i=0;$i -lt $shySequence.Count;$i++){$frames["5,$i"]=$frames[$shySequence[$i]]}
+# Slow the paw gesture and blend between existing poses, then retrace the motion.
+$thinkingPoses=@(0,1,2,3,2,1,0 | ForEach-Object {$frames["7,$_"]})
+$thinkingFrames=New-Object System.Collections.ArrayList
+for($i=0;$i -lt $thinkingPoses.Count-1;$i++){
+ [void]$thinkingFrames.Add($thinkingPoses[$i])
+ foreach($fraction in @(0.333333,0.666667)){
+  $drawing=New-Object Windows.Media.DrawingGroup;$dc=$drawing.Open()
+  $dc.PushOpacity(1);$dc.DrawImage($thinkingPoses[$i],(New-Object Windows.Rect 0,0,192,208));$dc.Pop()
+  $dc.PushOpacity($fraction);$dc.DrawImage($thinkingPoses[$i+1],(New-Object Windows.Rect 0,0,192,208));$dc.Pop()
+  $dc.Close();$drawing.Freeze()
+  $transition=New-Object Windows.Media.DrawingImage $drawing;$transition.Freeze()
+  [void]$thinkingFrames.Add($transition)
+ }
+}
+[void]$thinkingFrames.Add($thinkingPoses[-1]);$counts[7]=$thinkingFrames.Count
+for($i=0;$i -lt $thinkingFrames.Count;$i++){
+ $drawing=New-Object Windows.Media.DrawingGroup;$dc=$drawing.Open()
+ $dc.PushClip((New-Object Windows.Media.RectangleGeometry (New-Object Windows.Rect 0,76,192,132)))
+ $dc.DrawImage($thinkingFrames[$i],(New-Object Windows.Rect 0,0,192,208));$dc.Pop()
+ $dc.PushClip((New-Object Windows.Media.RectangleGeometry (New-Object Windows.Rect 0,0,192,76)))
+ $dc.DrawImage($stillFrame,(New-Object Windows.Rect 0,0,192,208));$dc.Pop()
+ $dc.Close();$drawing.Freeze();$fixedHead=New-Object Windows.Media.DrawingImage $drawing;$fixedHead.Freeze()
+ $frames["7,$i"]=$fixedHead
+}
 $player=New-Object System.Media.SoundPlayer (Join-Path $root 'meow.wav')
 $player.Load()
 if($ValidateOnly){Write-Output "Validated $($frames.Count) frames and meow.wav";exit}
 [xml]$xaml=@'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Jade cat" Width="192" Height="208" WindowStyle="None" AllowsTransparency="True" Background="Transparent" Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Jade cat" Width="192" Height="208" WindowStyle="None" AllowsTransparency="True" Background="Transparent" Topmost="False" ShowActivated="False" ShowInTaskbar="False" ResizeMode="NoResize">
  <Grid Background="Transparent"><Image Name="Cat" Stretch="Fill"/><Canvas Name="Effects" IsHitTestVisible="False"/></Grid>
 </Window>
 '@
@@ -50,28 +79,33 @@ $cat.Source=$frames['0,0']
 $script:row=0;$script:column=0;$script:deadline=[DateTime]::MinValue;$script:nextFrame=[DateTime]::Now
 $script:muted=$false;$script:press=$null;$script:moved=$false;$script:lastPet=[DateTime]::MinValue
 $durations=@(@(80,70,100,70,80,100),@(120,120,120,120,120,120,120,220),@(120,120,120,120,120,120,120,220),@(180,220,220,280),@(140,140,140,140,280),@(180,180,180,180,180,180,180,300),@(200,200,200,200,200,300),@(180,180,180,180,180,300),@(200,200,200,200,200,300))
+$durations[7]=@(100)*$counts[7]
+$durations[7][0]=300;$durations[7][9]=450;$durations[7][-1]=350
 $idleActions=@(
- @{Label='眨眼 / Blink';Row=0;Weight=70},
- @{Label='抬爪 / Wave';Row=3;Weight=10},
- @{Label='歪头 / Curious';Row=6;Weight=7},
- @{Label='观察 / Look around';Row=8;Weight=5},
- @{Label='思考 / Think';Row=7;Weight=4},
- @{Label='低头 / Shy';Row=5;Weight=2},
- @{Label='跳跃 / Jump';Row=4;Weight=2}
+ @{Label='眨眼 / Blink';Row=0;Weight=50},
+ @{Label='抬爪 / Wave';Row=3;Weight=14},
+ @{Label='歪头 / Curious';Row=6;Weight=11},
+ @{Label='观察 / Look around';Row=8;Weight=9},
+ @{Label='思考 / Think';Row=7;Weight=8},
+ @{Label='低头 / Shy';Row=5;Weight=4},
+ @{Label='跳跃 / Jump';Row=4;Weight=4}
 )
 $script:actionActive=$false
-$script:nextIdle=[DateTime]::Now.AddSeconds((Get-Random -Minimum 8 -Maximum 16))
+$script:nextIdle=[DateTime]::Now.AddSeconds((Get-Random -Minimum 7 -Maximum 11))
 function Play-Action([int]$Row,[int]$Milliseconds){
  $script:row=$Row;$script:column=0;$script:actionActive=$Milliseconds -gt 0
  $script:deadline=[DateTime]::Now.AddMilliseconds($Milliseconds);$script:nextFrame=[DateTime]::Now
- $script:nextIdle=$script:deadline.AddSeconds((Get-Random -Minimum 8 -Maximum 16))
+ $script:nextIdle=$script:deadline.AddSeconds((Get-Random -Minimum 7 -Maximum 11))
  $cat.Source=$frames["$Row,0"]
 }
 function Select-IdleRow([int]$Roll=(Get-Random -Minimum 0 -Maximum 100)){
  foreach($action in $idleActions){if($Roll -lt $action.Weight){return $action.Row};$Roll-=$action.Weight}
  throw 'Invalid idle action roll'
 }
-function Play-CatAnimation([int]$Row){Play-Action $Row (($durations[$Row] | Measure-Object -Sum).Sum)}
+function Play-CatAnimation([int]$Row){
+ $script:lastLoops=if($Row -eq 4){Get-Random -Minimum 2 -Maximum 4}else{1}
+ Play-Action $Row (($durations[$Row] | Measure-Object -Sum).Sum*$script:lastLoops)
+}
 function Set-CatSize([double]$Width){
  $width=[Math]::Max(96,[Math]::Min(384,$Width))
  $height=$width*208/192
@@ -156,9 +190,9 @@ function Update-Cat([DateTime]$Now,[bool]$PointerOver=$window.IsMouseOver){
  if(!$script:actionActive -and !$script:press -and !$menu.IsOpen -and !$PointerOver -and $Now -ge $script:nextIdle){
   Play-CatAnimation (Select-IdleRow)
  }
- if($script:row -lt 9 -and $script:actionActive -and $Now -ge $script:nextFrame){
+ while($script:row -lt 9 -and $script:actionActive -and $Now -ge $script:nextFrame){
   $cat.Source=$frames["$script:row,$script:column"]
-  $script:nextFrame=$Now.AddMilliseconds($durations[$script:row][$script:column])
+  $script:nextFrame=$script:nextFrame.AddMilliseconds($durations[$script:row][$script:column])
   $script:column=($script:column+1)%$counts[$script:row]
  }
 }
@@ -178,6 +212,8 @@ if($SelfTest){
  $window.Add_Loaded({
   $script:muted=$true
   if($window.ShowInTaskbar){throw 'Pet must be hidden from taskbar'}
+  if($window.Topmost -or $window.ShowActivated){throw 'Pet must not force itself above foreground apps'}
+  if($counts[7] -ne 19 -or ($durations[7] | Measure-Object -Sum).Sum -lt 2500){throw 'Thinking gesture is not sufficiently smooth/slow'}
   $distribution=@{}
   foreach($roll in 0..99){$r=Select-IdleRow $roll;$distribution[[string]$r]++}
   foreach($action in $idleActions){if($distribution[[string]$action.Row] -ne $action.Weight){throw 'Idle weights failed'}}
@@ -185,14 +221,29 @@ if($SelfTest){
    $item.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.MenuItem]::ClickEvent)))
    if($script:row -ne [int]$item.Tag -or !$script:actionActive){throw 'Action menu dispatch failed'}
    foreach($c in 0..($counts[$script:row]-1)){
-    $script:nextFrame=[DateTime]::MinValue;Update-Cat ([DateTime]::Now)
+    $script:nextFrame=[DateTime]::Now;Update-Cat ([DateTime]::Now)
     if(!$cat.Source){throw 'Animation frame missing'}
    }
    $script:deadline=[DateTime]::MinValue;Update-Cat ([DateTime]::Now)
    if($script:actionActive -or $script:row -ne 0){throw 'Action failed to return to still idle'}
    $gap=($script:nextIdle-[DateTime]::Now).TotalSeconds
-   if($gap -lt 7.5 -or $gap -gt 15.5){throw 'Idle gap outside 8-15 seconds'}
+   if($gap -lt 6.5 -or $gap -gt 10.5){throw 'Idle gap outside 7-10 seconds'}
   }
+  $observedLoops=@{}
+  foreach($trial in 1..40){
+   $before=[DateTime]::Now;Play-CatAnimation 4
+   if($script:lastLoops -notin @(2,3)){throw 'Jump must repeat two or three times'}
+   $observedLoops[[string]$script:lastLoops]=$true
+   $total=($durations[4] | Measure-Object -Sum).Sum*$script:lastLoops
+   if([Math]::Abs(($script:deadline-$before).TotalMilliseconds-$total) -gt 100){throw 'Jump duration mismatch'}
+  }
+  if($observedLoops.Count -ne 2){throw 'Jump repetition is not varying'}
+  Play-CatAnimation 4
+  $jumpEnd=$script:deadline
+  Update-Cat ($script:nextFrame.AddMilliseconds(850)) $false
+  if(!$script:actionActive -or $script:row -ne 4){throw 'Jump stopped after only one cycle'}
+  Update-Cat ($jumpEnd.AddMilliseconds(1)) $false
+  if($script:actionActive -or $script:row -ne 0){throw 'Jump failed to finish'}
   Play-Action 0 0;$script:nextIdle=[DateTime]::MinValue
   Update-Cat ([DateTime]::Now) $true
   if($script:actionActive){throw 'Idle scheduler interrupted pointer interaction'}
@@ -207,7 +258,7 @@ if($SelfTest){
   Play-CatAnimation 8;$script:nextIdle=[DateTime]::MinValue;Update-Cat ([DateTime]::Now)
   if($script:row -ne 8){throw 'Idle scheduler interrupted active animation'}
   Play-Action 0 0
-  @{ok=$true;weights=$distribution;menuActions=$actionMenu.Items.Count;idleGapSeconds=@(8,15)} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'idle-actions-test.json')
+  @{ok=$true;weights=$distribution;menuActions=$actionMenu.Items.Count;thinkingFrames=$counts[7];thinkingDurationMs=($durations[7] | Measure-Object -Sum).Sum;jumpLoops=@(2,3);idleGapSeconds=@(7,10)} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'idle-actions-test.json')
   Set-CatSize 288
   if($window.Width -ne 288 -or $window.Height -ne 312){throw 'Resize aspect ratio failed'}
   Set-CatSize 999
@@ -248,5 +299,5 @@ if($SelfTest){
 [void]$window.ShowDialog()
 if($SelfTest){
  if(!$script:closed -or $timer.IsEnabled -or $script:testTimer.IsEnabled){throw 'Close did not release timers'}
- @{ok=$true;closeMenu=$true;timersStopped=$true;hiddenFromTaskbar=(!$window.ShowInTaskbar);idleGapSeconds=@(8,15)} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'shutdown-test.json')
+ @{ok=$true;closeMenu=$true;timersStopped=$true;hiddenFromTaskbar=(!$window.ShowInTaskbar);idleGapSeconds=@(7,10)} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'shutdown-test.json')
 }
