@@ -1,0 +1,160 @@
+﻿param([switch]$ValidateOnly,[switch]$SelfTest)
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+$root=$PSScriptRoot
+$atlas=New-Object Windows.Media.Imaging.BitmapImage
+$atlas.BeginInit()
+$atlas.CacheOption=[Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+$atlas.UriSource=[Uri](Join-Path $root 'cat-atlas.png')
+$atlas.EndInit()
+$atlas.Freeze()
+if($atlas.PixelWidth -ne 1536 -or $atlas.PixelHeight -ne 2288){throw 'Invalid cat atlas dimensions'}
+$frames=@{}
+$counts=@(6,8,8,4,5,8,6,6,6,8,8)
+for($r=0;$r -lt 11;$r++){for($c=0;$c -lt $counts[$r];$c++){
+ $rect=New-Object Windows.Int32Rect ($c*192),($r*208),192,208
+ $frame=New-Object Windows.Media.Imaging.CroppedBitmap $atlas,$rect
+ $frame.Freeze();$frames["$r,$c"]=$frame
+}}
+$player=New-Object System.Media.SoundPlayer (Join-Path $root 'meow.wav')
+$player.Load()
+if($ValidateOnly){Write-Output "Validated $($frames.Count) frames and meow.wav";exit}
+[xml]$xaml=@'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Jade cat" Width="192" Height="208" WindowStyle="None" AllowsTransparency="True" Background="Transparent" Topmost="True" ShowInTaskbar="True" ResizeMode="NoResize">
+ <Grid Background="Transparent"><Image Name="Cat" Stretch="Fill"/><Canvas Name="Effects" IsHitTestVisible="False"/></Grid>
+</Window>
+'@
+$window=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
+$cat=$window.FindName('Cat');$effects=$window.FindName('Effects')
+[Windows.Media.RenderOptions]::SetBitmapScalingMode($cat,[Windows.Media.BitmapScalingMode]::HighQuality)
+$window.Left=[Math]::Max(0,[Windows.SystemParameters]::WorkArea.Right-330)
+$window.Top=[Math]::Max(0,[Windows.SystemParameters]::WorkArea.Bottom-350)
+$cat.Source=$frames['0,0']
+$script:row=0;$script:column=0;$script:deadline=[DateTime]::MinValue;$script:nextFrame=[DateTime]::Now
+$script:muted=$false;$script:press=$null;$script:moved=$false;$script:lastPet=[DateTime]::MinValue
+$durations=@(@(280,110,110,140,140,320),@(120,120,120,120,120,120,120,220),@(120,120,120,120,120,120,120,220),@(140,140,140,280),@(140,140,140,140,280))
+function Play-Action([int]$Row,[int]$Milliseconds){$script:row=$Row;$script:column=0;$script:deadline=[DateTime]::Now.AddMilliseconds($Milliseconds);$script:nextFrame=[DateTime]::Now}
+function Set-CatSize([double]$Width){
+ $width=[Math]::Max(96,[Math]::Min(384,$Width))
+ $height=$width*208/192
+ $window.Left+=($window.Width-$width)/2;$window.Top+=$window.Height-$height
+ $window.Width=$width;$window.Height=$height
+ $effects.Children.Clear()
+}
+function Move-Cat([double]$Dx,[double]$Dy){
+ $script:moved=$true
+ $runRow=if($Dx -lt -0.5){2}elseif($Dx -gt 0.5){1}elseif($script:row -in @(1,2)){$script:row}else{1}
+ if($script:row -ne $runRow){Play-Action $runRow 300}
+ $script:deadline=[DateTime]::Now.AddMilliseconds(300)
+ $window.Left+=$Dx;$window.Top+=$Dy
+}
+function End-Drag {
+ $wasDragging=$script:moved
+ $script:press=$null;$script:moved=$false
+ if($wasDragging){Play-Action 0 0}
+}
+function Pet-Cat {
+ if(([DateTime]::Now-$script:lastPet).TotalMilliseconds -lt 900){return}
+ $script:lastPet=[DateTime]::Now
+ Play-Action 3 1000
+ if(!$script:muted){$player.Play()}
+ $effects.Children.Clear()
+ for($i=0;$i -lt 3;$i++){
+  $heart=New-Object Windows.Controls.TextBlock
+  $scale=$window.Width/288
+  $heart.Text=[char]0x2665;$heart.FontSize=22*$scale;$heart.Foreground=[Windows.Media.Brushes]::HotPink
+  [Windows.Controls.Canvas]::SetLeft($heart,((105+$i*25)*$scale));[Windows.Controls.Canvas]::SetTop($heart,((28-$i*5)*$scale))
+  [void]$effects.Children.Add($heart)
+  $fade=New-Object Windows.Media.Animation.DoubleAnimation 1,0,([Windows.Duration][TimeSpan]::FromSeconds(1.2))
+  $heart.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade)
+ }
+}
+$menu=New-Object Windows.Controls.ContextMenu
+foreach($label in @('Pet / Meow','Jump','Sound on / off','Close')){
+ $item=New-Object Windows.Controls.MenuItem;$item.Header=$label
+ $item.Add_Click({switch($this.Header){'Pet / Meow'{Pet-Cat};'Jump'{Play-Action 4 840};'Sound on / off'{$script:muted=!$script:muted};'Close'{$window.Close()}}})
+ [void]$menu.Items.Add($item)
+}
+$window.ContextMenu=$menu
+$window.ToolTip='Click head: meow | Drag: run | Mouse wheel: resize | Right click: menu | Esc: close'
+$window.Add_MouseWheel({if(!$script:press){Set-CatSize ($window.Width+[Math]::Sign($_.Delta)*24);$_.Handled=$true}})
+$window.Add_KeyDown({if($_.Key -eq 'Escape'){$window.Close()}elseif($_.Key -eq 'Space'){Pet-Cat}})
+$window.Add_MouseLeftButtonDown({$script:press=$_.GetPosition($window);$script:moved=$false;[void]$window.CaptureMouse()})
+$window.Add_MouseMove({
+ $point=$_.GetPosition($window)
+ if($script:press -and $_.LeftButton -eq 'Pressed'){
+  $dx=$point.X-$script:press.X;$dy=$point.Y-$script:press.Y
+  if($script:moved -or [Math]::Abs($dx)+[Math]::Abs($dy) -gt 6){
+   Move-Cat $dx $dy
+  }
+ }elseif([DateTime]::Now -gt $script:deadline){
+  $dx=$point.X*288/$window.Width-144;$dy=$point.Y*312/$window.Height-115
+  if([Math]::Sqrt($dx*$dx+$dy*$dy) -gt 30){
+   $degree=([Math]::Atan2($dx,-$dy)*180/[Math]::PI+360)%360
+   $index=[int][Math]::Round($degree/22.5)%16
+   $script:row=9+[int][Math]::Floor($index/8);$script:column=$index%8
+   $cat.Source=$frames["$script:row,$script:column"]
+  }else{$script:row=0}
+ }
+})
+$window.Add_MouseLeftButtonUp({
+ if($script:press -and !$script:moved -and $script:press.Y -lt $window.Height*162/312){Pet-Cat}
+ End-Drag
+ $window.ReleaseMouseCapture()
+})
+$window.Add_LostMouseCapture({End-Drag})
+$window.Add_MouseLeave({if(!$script:press -and [DateTime]::Now -gt $script:deadline){$script:row=0;$script:column=0}})
+$timer=New-Object Windows.Threading.DispatcherTimer
+$timer.Interval=[TimeSpan]::FromMilliseconds(35)
+$timer.Add_Tick({
+ $now=[DateTime]::Now
+ if(!$script:moved -and $script:row -gt 0 -and $script:row -lt 9 -and $now -gt $script:deadline){$script:row=0;$script:column=0}
+ if($script:row -lt 9 -and $now -ge $script:nextFrame){
+  $cat.Source=$frames["$script:row,$script:column"]
+  $script:nextFrame=$now.AddMilliseconds($durations[$script:row][$script:column])
+  $script:column=($script:column+1)%$counts[$script:row]
+ }
+})
+$window.Add_Closed({$timer.Stop();$player.Stop()})
+$timer.Start()
+if($SelfTest){
+ $testOutput=Join-Path $root '.test-output'
+ [void][IO.Directory]::CreateDirectory($testOutput)
+ $window.Add_Loaded({
+  $script:muted=$true
+  Set-CatSize 288
+  if($window.Width -ne 288 -or $window.Height -ne 312){throw 'Resize aspect ratio failed'}
+  Set-CatSize 999
+  if($window.Width -ne 384){throw 'Resize upper limit failed'}
+  Set-CatSize 1
+  if($window.Width -ne 96){throw 'Resize lower limit failed'}
+  Set-CatSize 192
+  Move-Cat 12 0
+  if($script:row -ne 1){throw 'Right drag animation failed'}
+  $script:column=3;Move-Cat 12 0
+  if($script:column -ne 3){throw 'Drag incorrectly restarts animation'}
+  Move-Cat -24 0
+  if($script:row -ne 2){throw 'Left drag animation failed'}
+  End-Drag
+  if($script:row -ne 0 -or $script:moved){throw 'Drag release failed'}
+  Pet-Cat
+  if($effects.Children.Count -ne 3 -or $script:row -ne 3){throw 'Head-pet interaction failed'}
+  $script:testTimer=New-Object Windows.Threading.DispatcherTimer
+  $script:testTimer.Interval=[TimeSpan]::FromMilliseconds(450)
+  $script:testTimer.Add_Tick({
+   $script:testTimer.Stop()
+   if($script:row -ne 3 -or $script:column -lt 2){$window.Close();throw 'Animation did not advance during head-pet action'}
+   @{ok=$true;row=$script:row;nextFrame=$script:column;hearts=$effects.Children.Count} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'native-runtime-test.json')
+   $bitmap=New-Object Windows.Media.Imaging.RenderTargetBitmap ([int]$window.Width),([int]$window.Height),96,96,([Windows.Media.PixelFormats]::Pbgra32)
+   $bitmap.Render($window)
+   $encoder=New-Object Windows.Media.Imaging.PngBitmapEncoder
+   $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+   $stream=[IO.File]::Create((Join-Path $testOutput 'desktop-interaction-qa.png'))
+   try{$encoder.Save($stream)}finally{$stream.Dispose()}
+   Write-Output 'PASS: resize bounds and aspect ratio, left/right drag, continuous frames, drag release, head-pet animation and hearts.'
+   $window.Close()
+  })
+  $script:testTimer.Start()
+ })
+}
+[void]$window.ShowDialog()
