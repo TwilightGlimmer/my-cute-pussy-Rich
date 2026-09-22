@@ -16,57 +16,12 @@ for($r=0;$r -lt 11;$r++){for($c=0;$c -lt $counts[$r];$c++){
  $frame=New-Object Windows.Media.Imaging.CroppedBitmap $atlas,$rect
  $frame.Freeze();$frames["$r,$c"]=$frame
 }}
-# Keep the idle silhouette fixed; draw only registered eyelid regions.
-$stillFrame=$frames['0,0']
-foreach($entry in @(@(1,2),@(2,3),@(3,2))){
- $drawing=New-Object Windows.Media.DrawingGroup
- $context=$drawing.Open()
- $context.DrawImage($stillFrame,(New-Object Windows.Rect 0,0,192,208))
- foreach($eyeX in @(90,117)){
-  $eyeClip=New-Object Windows.Media.EllipseGeometry (New-Object Windows.Point $eyeX,45),8,5.5
-  $context.PushClip($eyeClip)
-  $context.DrawImage($frames["0,$($entry[1])"],(New-Object Windows.Rect 0,-4,192,208))
-  $context.Pop()
- }
- $context.Close();$drawing.Freeze()
- $blink=New-Object Windows.Media.DrawingImage $drawing
- $blink.Freeze();$frames["0,$($entry[0])"]=$blink
-}
-$frames['0,4']=$stillFrame;$frames['0,5']=$stillFrame
-# Reuse registered gaze poses instead of the oversized review/failed heads.
-$lookSequence=@('0,0','9,4','9,4','0,0','10,4','0,0')
-$shySequence=@('0,0','9,7','10,0','10,0','10,0','9,7','0,0','0,0')
-for($i=0;$i -lt $lookSequence.Count;$i++){$frames["8,$i"]=$frames[$lookSequence[$i]]}
-for($i=0;$i -lt $shySequence.Count;$i++){$frames["5,$i"]=$frames[$shySequence[$i]]}
-# Slow the paw gesture and blend between existing poses, then retrace the motion.
-$thinkingPoses=@(0,1,2,3,2,1,0 | ForEach-Object {$frames["7,$_"]})
-$thinkingFrames=New-Object System.Collections.ArrayList
-for($i=0;$i -lt $thinkingPoses.Count-1;$i++){
- [void]$thinkingFrames.Add($thinkingPoses[$i])
- foreach($fraction in @(0.333333,0.666667)){
-  $drawing=New-Object Windows.Media.DrawingGroup;$dc=$drawing.Open()
-  $dc.PushOpacity(1);$dc.DrawImage($thinkingPoses[$i],(New-Object Windows.Rect 0,0,192,208));$dc.Pop()
-  $dc.PushOpacity($fraction);$dc.DrawImage($thinkingPoses[$i+1],(New-Object Windows.Rect 0,0,192,208));$dc.Pop()
-  $dc.Close();$drawing.Freeze()
-  $transition=New-Object Windows.Media.DrawingImage $drawing;$transition.Freeze()
-  [void]$thinkingFrames.Add($transition)
- }
-}
-[void]$thinkingFrames.Add($thinkingPoses[-1]);$counts[7]=$thinkingFrames.Count
-for($i=0;$i -lt $thinkingFrames.Count;$i++){
- $drawing=New-Object Windows.Media.DrawingGroup;$dc=$drawing.Open()
- $dc.PushClip((New-Object Windows.Media.RectangleGeometry (New-Object Windows.Rect 0,76,192,132)))
- $dc.DrawImage($thinkingFrames[$i],(New-Object Windows.Rect 0,0,192,208));$dc.Pop()
- $dc.PushClip((New-Object Windows.Media.RectangleGeometry (New-Object Windows.Rect 0,0,192,76)))
- $dc.DrawImage($stillFrame,(New-Object Windows.Rect 0,0,192,208));$dc.Pop()
- $dc.Close();$drawing.Freeze();$fixedHead=New-Object Windows.Media.DrawingImage $drawing;$fixedHead.Freeze()
- $frames["7,$i"]=$fixedHead
-}
+# Every animation uses complete, unmodified atlas cells in their original order.
 $player=New-Object System.Media.SoundPlayer (Join-Path $root 'meow.wav')
 $player.Load()
 if($ValidateOnly){Write-Output "Validated $($frames.Count) frames and meow.wav";exit}
 [xml]$xaml=@'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Jade cat" Width="192" Height="208" WindowStyle="None" AllowsTransparency="True" Background="Transparent" Topmost="False" ShowActivated="False" ShowInTaskbar="False" ResizeMode="NoResize">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Jade cat" Width="192" Height="208" WindowStyle="None" AllowsTransparency="True" Background="Transparent" Topmost="True" ShowActivated="False" ShowInTaskbar="False" ResizeMode="NoResize">
  <Grid Background="Transparent"><Image Name="Cat" Stretch="Fill"/><Canvas Name="Effects" IsHitTestVisible="False"/></Grid>
 </Window>
 '@
@@ -76,11 +31,12 @@ $cat=$window.FindName('Cat');$effects=$window.FindName('Effects')
 $window.Left=[Math]::Max(0,[Windows.SystemParameters]::WorkArea.Right-330)
 $window.Top=[Math]::Max(0,[Windows.SystemParameters]::WorkArea.Bottom-350)
 $cat.Source=$frames['0,0']
-$script:row=0;$script:column=0;$script:deadline=[DateTime]::MinValue;$script:nextFrame=[DateTime]::Now
+$script:row=0;$script:column=0;$script:nextFrame=[DateTime]::Now
 $script:muted=$false;$script:press=$null;$script:moved=$false;$script:lastPet=[DateTime]::MinValue
 $durations=@(@(80,70,100,70,80,100),@(120,120,120,120,120,120,120,220),@(120,120,120,120,120,120,120,220),@(180,220,220,280),@(140,140,140,140,280),@(180,180,180,180,180,180,180,300),@(200,200,200,200,200,300),@(180,180,180,180,180,300),@(200,200,200,200,200,300))
-$durations[7]=@(100)*$counts[7]
-$durations[7][0]=300;$durations[7][9]=450;$durations[7][-1]=350
+$durations[7]=@(400,450,550,550,450,400)
+$durations[5]=@(220,260,300,450,450,300,260,300)
+$durations[8]=@(280,300,350,350,300,320)
 $idleActions=@(
  @{Label='眨眼 / Blink';Row=0;Weight=50},
  @{Label='抬爪 / Wave';Row=3;Weight=14},
@@ -92,10 +48,11 @@ $idleActions=@(
 )
 $script:actionActive=$false
 $script:nextIdle=[DateTime]::Now.AddSeconds((Get-Random -Minimum 7 -Maximum 11))
-function Play-Action([int]$Row,[int]$Milliseconds){
+function Play-Action([int]$Row,[int]$Milliseconds,[int]$Loops=1){
  $script:row=$Row;$script:column=0;$script:actionActive=$Milliseconds -gt 0
- $script:deadline=[DateTime]::Now.AddMilliseconds($Milliseconds);$script:nextFrame=[DateTime]::Now
- $script:nextIdle=$script:deadline.AddSeconds((Get-Random -Minimum 7 -Maximum 11))
+ $script:loopsRemaining=$Loops
+ $script:nextFrame=[DateTime]::Now.AddMilliseconds($durations[$Row][0])
+ $script:nextIdle=[DateTime]::Now.AddSeconds((Get-Random -Minimum 7 -Maximum 11))
  $cat.Source=$frames["$Row,0"]
 }
 function Select-IdleRow([int]$Roll=(Get-Random -Minimum 0 -Maximum 100)){
@@ -104,7 +61,7 @@ function Select-IdleRow([int]$Roll=(Get-Random -Minimum 0 -Maximum 100)){
 }
 function Play-CatAnimation([int]$Row){
  $script:lastLoops=if($Row -eq 4){Get-Random -Minimum 2 -Maximum 4}else{1}
- Play-Action $Row (($durations[$Row] | Measure-Object -Sum).Sum*$script:lastLoops)
+ Play-Action $Row (($durations[$Row] | Measure-Object -Sum).Sum*$script:lastLoops) $script:lastLoops
 }
 function Set-CatSize([double]$Width){
  $width=[Math]::Max(96,[Math]::Min(384,$Width))
@@ -117,7 +74,6 @@ function Move-Cat([double]$Dx,[double]$Dy){
  $script:moved=$true
  $runRow=if($Dx -lt -0.5){2}elseif($Dx -gt 0.5){1}elseif($script:row -in @(1,2)){$script:row}else{1}
  if($script:row -ne $runRow){Play-Action $runRow 300}
- $script:deadline=[DateTime]::Now.AddMilliseconds(300)
  $window.Left+=$Dx;$window.Top+=$Dy
 }
 function End-Drag {
@@ -166,7 +122,7 @@ $window.Add_MouseMove({
   if($script:moved -or [Math]::Abs($dx)+[Math]::Abs($dy) -gt 6){
    Move-Cat $dx $dy
   }
- }elseif([DateTime]::Now -gt $script:deadline){
+ }elseif(!$script:actionActive){
   $dx=$point.X*288/$window.Width-144;$dy=$point.Y*312/$window.Height-115
   if([Math]::Sqrt($dx*$dx+$dy*$dy) -gt 30){
    $degree=([Math]::Atan2($dx,-$dy)*180/[Math]::PI+360)%360
@@ -182,18 +138,24 @@ $window.Add_MouseLeftButtonUp({
  $window.ReleaseMouseCapture()
 })
 $window.Add_LostMouseCapture({End-Drag})
-$window.Add_MouseLeave({if(!$script:press -and [DateTime]::Now -gt $script:deadline){Play-Action 0 0}})
+$window.Add_MouseLeave({if(!$script:press -and !$script:actionActive){Play-Action 0 0}})
 $timer=New-Object Windows.Threading.DispatcherTimer
 $timer.Interval=[TimeSpan]::FromMilliseconds(35)
 function Update-Cat([DateTime]$Now,[bool]$PointerOver=$window.IsMouseOver){
- if(!$script:moved -and $script:actionActive -and $Now -ge $script:deadline){Play-Action 0 0}
+ # Advance at most one frame per tick. Never skip poses to catch up with wall time.
+ if($script:actionActive -and $Now -ge $script:nextFrame){
+  if($script:column -eq $counts[$script:row]-1){
+   if($script:moved){$script:column=0}
+   elseif($script:loopsRemaining -gt 1){$script:loopsRemaining--;$script:column=0}
+   else{Play-Action 0 0}
+  }else{$script:column++}
+  if($script:actionActive){
+   $cat.Source=$frames["$script:row,$script:column"]
+   $script:nextFrame=$Now.AddMilliseconds($durations[$script:row][$script:column])
+  }
+ }
  if(!$script:actionActive -and !$script:press -and !$menu.IsOpen -and !$PointerOver -and $Now -ge $script:nextIdle){
   Play-CatAnimation (Select-IdleRow)
- }
- while($script:row -lt 9 -and $script:actionActive -and $Now -ge $script:nextFrame){
-  $cat.Source=$frames["$script:row,$script:column"]
-  $script:nextFrame=$script:nextFrame.AddMilliseconds($durations[$script:row][$script:column])
-  $script:column=($script:column+1)%$counts[$script:row]
  }
 }
 $timer.Add_Tick({Update-Cat ([DateTime]::Now)})
@@ -212,38 +174,38 @@ if($SelfTest){
  $window.Add_Loaded({
   $script:muted=$true
   if($window.ShowInTaskbar){throw 'Pet must be hidden from taskbar'}
-  if($window.Topmost -or $window.ShowActivated){throw 'Pet must not force itself above foreground apps'}
-  if($counts[7] -ne 19 -or ($durations[7] | Measure-Object -Sum).Sum -lt 2500){throw 'Thinking gesture is not sufficiently smooth/slow'}
+  if(!$window.Topmost -or $window.ShowActivated){throw 'Pet must stay topmost without stealing startup focus'}
+  if($counts[7] -ne 6 -or ($durations[7] | Measure-Object -Sum).Sum -lt 2800){throw 'Thinking must use six original poses at a slower pace'}
+  foreach($r in 0..10){foreach($c in 0..($counts[$r]-1)){
+   $frame=$frames["$r,$c"]
+   if($frame -isnot [Windows.Media.Imaging.CroppedBitmap] -or $frame.SourceRect.X -ne $c*192 -or $frame.SourceRect.Y -ne $r*208){throw 'Animation no longer matches atlas cell'}
+  }}
   $distribution=@{}
   foreach($roll in 0..99){$r=Select-IdleRow $roll;$distribution[[string]$r]++}
   foreach($action in $idleActions){if($distribution[[string]$action.Row] -ne $action.Weight){throw 'Idle weights failed'}}
   foreach($item in $actionMenu.Items){
    $item.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.MenuItem]::ClickEvent)))
    if($script:row -ne [int]$item.Tag -or !$script:actionActive){throw 'Action menu dispatch failed'}
-   foreach($c in 0..($counts[$script:row]-1)){
-    $script:nextFrame=[DateTime]::Now;Update-Cat ([DateTime]::Now)
-    if(!$cat.Source){throw 'Animation frame missing'}
-   }
-   $script:deadline=[DateTime]::MinValue;Update-Cat ([DateTime]::Now)
+   $expectedRow=[int]$item.Tag;$expectedLoops=$script:lastLoops
+   foreach($loop in 1..$expectedLoops){foreach($c in 0..($counts[$expectedRow]-1)){
+    if($script:row -ne $expectedRow -or $script:column -ne $c -or ![Object]::ReferenceEquals($cat.Source,$frames["$expectedRow,$c"])){throw 'Animation skipped or reordered a frame'}
+    Update-Cat ($script:nextFrame.AddMilliseconds(1)) $true
+   }}
    if($script:actionActive -or $script:row -ne 0){throw 'Action failed to return to still idle'}
    $gap=($script:nextIdle-[DateTime]::Now).TotalSeconds
    if($gap -lt 6.5 -or $gap -gt 10.5){throw 'Idle gap outside 7-10 seconds'}
   }
   $observedLoops=@{}
   foreach($trial in 1..40){
-   $before=[DateTime]::Now;Play-CatAnimation 4
-   if($script:lastLoops -notin @(2,3)){throw 'Jump must repeat two or three times'}
+   Play-CatAnimation 4
+   if($script:lastLoops -notin @(2,3) -or $script:loopsRemaining -ne $script:lastLoops){throw 'Jump must repeat two or three times'}
    $observedLoops[[string]$script:lastLoops]=$true
-   $total=($durations[4] | Measure-Object -Sum).Sum*$script:lastLoops
-   if([Math]::Abs(($script:deadline-$before).TotalMilliseconds-$total) -gt 100){throw 'Jump duration mismatch'}
   }
   if($observedLoops.Count -ne 2){throw 'Jump repetition is not varying'}
-  Play-CatAnimation 4
-  $jumpEnd=$script:deadline
-  Update-Cat ($script:nextFrame.AddMilliseconds(850)) $false
-  if(!$script:actionActive -or $script:row -ne 4){throw 'Jump stopped after only one cycle'}
-  Update-Cat ($jumpEnd.AddMilliseconds(1)) $false
-  if($script:actionActive -or $script:row -ne 0){throw 'Jump failed to finish'}
+  # A delayed timer must still show the next pose, not skip ahead or cut the action short.
+  Play-CatAnimation 7
+  Update-Cat ($script:nextFrame.AddSeconds(5)) $true
+  if(!$script:actionActive -or $script:column -ne 1){throw 'Delayed timer skipped a thinking pose'}
   Play-Action 0 0;$script:nextIdle=[DateTime]::MinValue
   Update-Cat ([DateTime]::Now) $true
   if($script:actionActive){throw 'Idle scheduler interrupted pointer interaction'}
@@ -277,7 +239,7 @@ if($SelfTest){
   Pet-Cat
   if($effects.Children.Count -ne 3 -or $script:row -ne 3){throw 'Head-pet interaction failed'}
   $script:testTimer=New-Object Windows.Threading.DispatcherTimer
-  $script:testTimer.Interval=[TimeSpan]::FromMilliseconds(450)
+  $script:testTimer.Interval=[TimeSpan]::FromMilliseconds(650)
   $script:testTimer.Add_Tick({
    $script:testTimer.Stop()
    if($script:row -ne 3 -or $script:column -lt 2){$window.Close();throw 'Animation did not advance during head-pet action'}
