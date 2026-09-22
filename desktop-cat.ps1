@@ -16,11 +16,28 @@ for($r=0;$r -lt 11;$r++){for($c=0;$c -lt $counts[$r];$c++){
  $frame=New-Object Windows.Media.Imaging.CroppedBitmap $atlas,$rect
  $frame.Freeze();$frames["$r,$c"]=$frame
 }}
+# Keep the idle silhouette fixed; draw only registered eyelid regions.
+$stillFrame=$frames['0,0']
+foreach($entry in @(@(1,2),@(2,3),@(3,2))){
+ $drawing=New-Object Windows.Media.DrawingGroup
+ $context=$drawing.Open()
+ $context.DrawImage($stillFrame,(New-Object Windows.Rect 0,0,192,208))
+ foreach($eyeX in @(90,117)){
+  $eyeClip=New-Object Windows.Media.EllipseGeometry (New-Object Windows.Point $eyeX,45),8,5.5
+  $context.PushClip($eyeClip)
+  $context.DrawImage($frames["0,$($entry[1])"],(New-Object Windows.Rect 0,-4,192,208))
+  $context.Pop()
+ }
+ $context.Close();$drawing.Freeze()
+ $blink=New-Object Windows.Media.DrawingImage $drawing
+ $blink.Freeze();$frames["0,$($entry[0])"]=$blink
+}
+$frames['0,4']=$stillFrame;$frames['0,5']=$stillFrame
 $player=New-Object System.Media.SoundPlayer (Join-Path $root 'meow.wav')
 $player.Load()
 if($ValidateOnly){Write-Output "Validated $($frames.Count) frames and meow.wav";exit}
 [xml]$xaml=@'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Jade cat" Width="192" Height="208" WindowStyle="None" AllowsTransparency="True" Background="Transparent" Topmost="True" ShowInTaskbar="True" ResizeMode="NoResize">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Jade cat" Width="192" Height="208" WindowStyle="None" AllowsTransparency="True" Background="Transparent" Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize">
  <Grid Background="Transparent"><Image Name="Cat" Stretch="Fill"/><Canvas Name="Effects" IsHitTestVisible="False"/></Grid>
 </Window>
 '@
@@ -32,7 +49,7 @@ $window.Top=[Math]::Max(0,[Windows.SystemParameters]::WorkArea.Bottom-350)
 $cat.Source=$frames['0,0']
 $script:row=0;$script:column=0;$script:deadline=[DateTime]::MinValue;$script:nextFrame=[DateTime]::Now
 $script:muted=$false;$script:press=$null;$script:moved=$false;$script:lastPet=[DateTime]::MinValue
-$durations=@(@(280,110,110,140,140,320),@(120,120,120,120,120,120,120,220),@(120,120,120,120,120,120,120,220),@(140,140,140,280),@(140,140,140,140,280))
+$durations=@(@(6000,70,100,70,600,600),@(120,120,120,120,120,120,120,220),@(120,120,120,120,120,120,120,220),@(140,140,140,280),@(140,140,140,140,280))
 function Play-Action([int]$Row,[int]$Milliseconds){$script:row=$Row;$script:column=0;$script:deadline=[DateTime]::Now.AddMilliseconds($Milliseconds);$script:nextFrame=[DateTime]::Now}
 function Set-CatSize([double]$Width){
  $width=[Math]::Max(96,[Math]::Min(384,$Width))
@@ -94,7 +111,7 @@ $window.Add_MouseMove({
    $index=[int][Math]::Round($degree/22.5)%16
    $script:row=9+[int][Math]::Floor($index/8);$script:column=$index%8
    $cat.Source=$frames["$script:row,$script:column"]
-  }else{$script:row=0}
+  }elseif($script:row -ne 0){Play-Action 0 0}
  }
 })
 $window.Add_MouseLeftButtonUp({
@@ -103,25 +120,34 @@ $window.Add_MouseLeftButtonUp({
  $window.ReleaseMouseCapture()
 })
 $window.Add_LostMouseCapture({End-Drag})
-$window.Add_MouseLeave({if(!$script:press -and [DateTime]::Now -gt $script:deadline){$script:row=0;$script:column=0}})
+$window.Add_MouseLeave({if(!$script:press -and [DateTime]::Now -gt $script:deadline){Play-Action 0 0}})
 $timer=New-Object Windows.Threading.DispatcherTimer
 $timer.Interval=[TimeSpan]::FromMilliseconds(35)
 $timer.Add_Tick({
  $now=[DateTime]::Now
- if(!$script:moved -and $script:row -gt 0 -and $script:row -lt 9 -and $now -gt $script:deadline){$script:row=0;$script:column=0}
+ if(!$script:moved -and $script:row -gt 0 -and $script:row -lt 9 -and $now -gt $script:deadline){Play-Action 0 0}
  if($script:row -lt 9 -and $now -ge $script:nextFrame){
   $cat.Source=$frames["$script:row,$script:column"]
   $script:nextFrame=$now.AddMilliseconds($durations[$script:row][$script:column])
   $script:column=($script:column+1)%$counts[$script:row]
  }
 })
-$window.Add_Closed({$timer.Stop();$player.Stop()})
+$script:closed=$false
+$window.Add_Closed({
+ $timer.Stop()
+ if($script:testTimer){$script:testTimer.Stop()}
+ $script:press=$null;$window.ReleaseMouseCapture()
+ $effects.Children.Clear();$player.Stop();$player.Dispose()
+ $script:closed=$true
+})
 $timer.Start()
 if($SelfTest){
  $testOutput=Join-Path $root '.test-output'
  [void][IO.Directory]::CreateDirectory($testOutput)
  $window.Add_Loaded({
   $script:muted=$true
+  if($window.ShowInTaskbar){throw 'Pet must be hidden from taskbar'}
+  if(($durations[0] | Measure-Object -Sum).Sum -lt 7000){throw 'Idle blink is too frequent'}
   Set-CatSize 288
   if($window.Width -ne 288 -or $window.Height -ne 312){throw 'Resize aspect ratio failed'}
   Set-CatSize 999
@@ -152,9 +178,15 @@ if($SelfTest){
    $stream=[IO.File]::Create((Join-Path $testOutput 'desktop-interaction-qa.png'))
    try{$encoder.Save($stream)}finally{$stream.Dispose()}
    Write-Output 'PASS: resize bounds and aspect ratio, left/right drag, continuous frames, drag release, head-pet animation and hearts.'
-   $window.Close()
+   # Exercise the actual Close menu click handler, not a separate shutdown path.
+   $closeItem=$menu.Items | Where-Object {$_.Header -eq 'Close'}
+   $closeItem.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.MenuItem]::ClickEvent)))
   })
   $script:testTimer.Start()
  })
 }
 [void]$window.ShowDialog()
+if($SelfTest){
+ if(!$script:closed -or $timer.IsEnabled -or $script:testTimer.IsEnabled){throw 'Close did not release timers'}
+ @{ok=$true;closeMenu=$true;timersStopped=$true;hiddenFromTaskbar=(!$window.ShowInTaskbar);idleCycleMs=($durations[0] | Measure-Object -Sum).Sum} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'shutdown-test.json')
+}
