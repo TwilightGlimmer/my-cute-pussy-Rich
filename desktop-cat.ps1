@@ -49,8 +49,29 @@ $window.Top=[Math]::Max(0,[Windows.SystemParameters]::WorkArea.Bottom-350)
 $cat.Source=$frames['0,0']
 $script:row=0;$script:column=0;$script:deadline=[DateTime]::MinValue;$script:nextFrame=[DateTime]::Now
 $script:muted=$false;$script:press=$null;$script:moved=$false;$script:lastPet=[DateTime]::MinValue
-$durations=@(@(6000,70,100,70,600,600),@(120,120,120,120,120,120,120,220),@(120,120,120,120,120,120,120,220),@(140,140,140,280),@(140,140,140,140,280))
-function Play-Action([int]$Row,[int]$Milliseconds){$script:row=$Row;$script:column=0;$script:deadline=[DateTime]::Now.AddMilliseconds($Milliseconds);$script:nextFrame=[DateTime]::Now}
+$durations=@(@(80,70,100,70,80,100),@(120,120,120,120,120,120,120,220),@(120,120,120,120,120,120,120,220),@(180,220,220,280),@(140,140,140,140,280),@(180,180,180,180,180,180,180,300),@(200,200,200,200,200,300),@(180,180,180,180,180,300),@(200,200,200,200,200,300))
+$idleActions=@(
+ @{Label='眨眼 / Blink';Row=0;Weight=70},
+ @{Label='抬爪 / Wave';Row=3;Weight=10},
+ @{Label='歪头 / Curious';Row=6;Weight=7},
+ @{Label='观察 / Look around';Row=8;Weight=5},
+ @{Label='思考 / Think';Row=7;Weight=4},
+ @{Label='低头 / Shy';Row=5;Weight=2},
+ @{Label='跳跃 / Jump';Row=4;Weight=2}
+)
+$script:actionActive=$false
+$script:nextIdle=[DateTime]::Now.AddSeconds((Get-Random -Minimum 8 -Maximum 16))
+function Play-Action([int]$Row,[int]$Milliseconds){
+ $script:row=$Row;$script:column=0;$script:actionActive=$Milliseconds -gt 0
+ $script:deadline=[DateTime]::Now.AddMilliseconds($Milliseconds);$script:nextFrame=[DateTime]::Now
+ $script:nextIdle=$script:deadline.AddSeconds((Get-Random -Minimum 8 -Maximum 16))
+ $cat.Source=$frames["$Row,0"]
+}
+function Select-IdleRow([int]$Roll=(Get-Random -Minimum 0 -Maximum 100)){
+ foreach($action in $idleActions){if($Roll -lt $action.Weight){return $action.Row};$Roll-=$action.Weight}
+ throw 'Invalid idle action roll'
+}
+function Play-CatAnimation([int]$Row){Play-Action $Row (($durations[$Row] | Measure-Object -Sum).Sum)}
 function Set-CatSize([double]$Width){
  $width=[Math]::Max(96,[Math]::Min(384,$Width))
  $height=$width*208/192
@@ -87,11 +108,18 @@ function Pet-Cat {
  }
 }
 $menu=New-Object Windows.Controls.ContextMenu
-foreach($label in @('Pet / Meow','Jump','Sound on / off','Close')){
+foreach($label in @('摸头 / Pet / Meow','Sound on / off','Close')){
  $item=New-Object Windows.Controls.MenuItem;$item.Header=$label
- $item.Add_Click({switch($this.Header){'Pet / Meow'{Pet-Cat};'Jump'{Play-Action 4 840};'Sound on / off'{$script:muted=!$script:muted};'Close'{$window.Close()}}})
+ $item.Add_Click({switch($this.Header){'摸头 / Pet / Meow'{Pet-Cat};'Sound on / off'{$script:muted=!$script:muted};'Close'{$window.Close()}}})
  [void]$menu.Items.Add($item)
 }
+$actionMenu=New-Object Windows.Controls.MenuItem;$actionMenu.Header='动作 / Actions'
+foreach($action in $idleActions){
+ $item=New-Object Windows.Controls.MenuItem;$item.Header=$action.Label;$item.Tag=$action.Row
+ $item.Add_Click({Play-CatAnimation ([int]$this.Tag);$_.Handled=$true})
+ [void]$actionMenu.Items.Add($item)
+}
+$menu.Items.Insert(1,$actionMenu)
 $window.ContextMenu=$menu
 $window.ToolTip='Click head: meow | Drag: run | Mouse wheel: resize | Right click: menu | Esc: close'
 $window.Add_MouseWheel({if(!$script:press){Set-CatSize ($window.Width+[Math]::Sign($_.Delta)*24);$_.Handled=$true}})
@@ -123,15 +151,18 @@ $window.Add_LostMouseCapture({End-Drag})
 $window.Add_MouseLeave({if(!$script:press -and [DateTime]::Now -gt $script:deadline){Play-Action 0 0}})
 $timer=New-Object Windows.Threading.DispatcherTimer
 $timer.Interval=[TimeSpan]::FromMilliseconds(35)
-$timer.Add_Tick({
- $now=[DateTime]::Now
- if(!$script:moved -and $script:row -gt 0 -and $script:row -lt 9 -and $now -gt $script:deadline){Play-Action 0 0}
- if($script:row -lt 9 -and $now -ge $script:nextFrame){
+function Update-Cat([DateTime]$Now,[bool]$PointerOver=$window.IsMouseOver){
+ if(!$script:moved -and $script:actionActive -and $Now -ge $script:deadline){Play-Action 0 0}
+ if(!$script:actionActive -and !$script:press -and !$menu.IsOpen -and !$PointerOver -and $Now -ge $script:nextIdle){
+  Play-CatAnimation (Select-IdleRow)
+ }
+ if($script:row -lt 9 -and $script:actionActive -and $Now -ge $script:nextFrame){
   $cat.Source=$frames["$script:row,$script:column"]
-  $script:nextFrame=$now.AddMilliseconds($durations[$script:row][$script:column])
+  $script:nextFrame=$Now.AddMilliseconds($durations[$script:row][$script:column])
   $script:column=($script:column+1)%$counts[$script:row]
  }
-})
+}
+$timer.Add_Tick({Update-Cat ([DateTime]::Now)})
 $script:closed=$false
 $window.Add_Closed({
  $timer.Stop()
@@ -147,7 +178,36 @@ if($SelfTest){
  $window.Add_Loaded({
   $script:muted=$true
   if($window.ShowInTaskbar){throw 'Pet must be hidden from taskbar'}
-  if(($durations[0] | Measure-Object -Sum).Sum -lt 7000){throw 'Idle blink is too frequent'}
+  $distribution=@{}
+  foreach($roll in 0..99){$r=Select-IdleRow $roll;$distribution[[string]$r]++}
+  foreach($action in $idleActions){if($distribution[[string]$action.Row] -ne $action.Weight){throw 'Idle weights failed'}}
+  foreach($item in $actionMenu.Items){
+   $item.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.MenuItem]::ClickEvent)))
+   if($script:row -ne [int]$item.Tag -or !$script:actionActive){throw 'Action menu dispatch failed'}
+   foreach($c in 0..($counts[$script:row]-1)){
+    $script:nextFrame=[DateTime]::MinValue;Update-Cat ([DateTime]::Now)
+    if(!$cat.Source){throw 'Animation frame missing'}
+   }
+   $script:deadline=[DateTime]::MinValue;Update-Cat ([DateTime]::Now)
+   if($script:actionActive -or $script:row -ne 0){throw 'Action failed to return to still idle'}
+   $gap=($script:nextIdle-[DateTime]::Now).TotalSeconds
+   if($gap -lt 7.5 -or $gap -gt 15.5){throw 'Idle gap outside 8-15 seconds'}
+  }
+  Play-Action 0 0;$script:nextIdle=[DateTime]::MinValue
+  Update-Cat ([DateTime]::Now) $true
+  if($script:actionActive){throw 'Idle scheduler interrupted pointer interaction'}
+  Update-Cat ([DateTime]::Now) $false
+  if(!$script:actionActive){throw 'Due idle action did not start'}
+  Play-Action 0 0
+  # The scheduler must not interrupt a held mouse press or an active action.
+  $script:press=New-Object Windows.Point 10,10;$script:nextIdle=[DateTime]::MinValue
+  Update-Cat ([DateTime]::Now)
+  if($script:actionActive){throw 'Idle scheduler interrupted mouse press'}
+  $script:press=$null
+  Play-CatAnimation 8;$script:nextIdle=[DateTime]::MinValue;Update-Cat ([DateTime]::Now)
+  if($script:row -ne 8){throw 'Idle scheduler interrupted active animation'}
+  Play-Action 0 0
+  @{ok=$true;weights=$distribution;menuActions=$actionMenu.Items.Count;idleGapSeconds=@(8,15)} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'idle-actions-test.json')
   Set-CatSize 288
   if($window.Width -ne 288 -or $window.Height -ne 312){throw 'Resize aspect ratio failed'}
   Set-CatSize 999
@@ -188,5 +248,5 @@ if($SelfTest){
 [void]$window.ShowDialog()
 if($SelfTest){
  if(!$script:closed -or $timer.IsEnabled -or $script:testTimer.IsEnabled){throw 'Close did not release timers'}
- @{ok=$true;closeMenu=$true;timersStopped=$true;hiddenFromTaskbar=(!$window.ShowInTaskbar);idleCycleMs=($durations[0] | Measure-Object -Sum).Sum} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'shutdown-test.json')
+ @{ok=$true;closeMenu=$true;timersStopped=$true;hiddenFromTaskbar=(!$window.ShowInTaskbar);idleGapSeconds=@(8,15)} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $testOutput 'shutdown-test.json')
 }
