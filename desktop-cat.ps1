@@ -37,14 +37,15 @@ $durations=@(@(80,70,100,70,80,100),@(120,120,120,120,120,120,120,220),@(120,120
 $durations[7]=@(400,450,550,550,450,400)
 $durations[5]=@(220,260,300,450,450,300,260,300)
 $durations[8]=@(280,300,350,350,300,320)
+# 600 equally likely slots: 198/600 = 33%, and 67/600 for each other action.
 $idleActions=@(
- @{Label='眨眼 / Blink';Row=0;Weight=50},
- @{Label='抬爪 / Wave';Row=3;Weight=14},
- @{Label='歪头 / Curious';Row=6;Weight=11},
- @{Label='观察 / Look around';Row=8;Weight=9},
- @{Label='思考 / Think';Row=7;Weight=8},
- @{Label='低头 / Shy';Row=5;Weight=4},
- @{Label='跳跃 / Jump';Row=4;Weight=4}
+ @{Label='眨眼 / Blink';Row=0;Weight=198},
+ @{Label='抬爪 / Wave';Row=3;Weight=67},
+ @{Label='歪头 / Curious';Row=6;Weight=67},
+ @{Label='观察 / Look around';Row=8;Weight=67},
+ @{Label='思考 / Think';Row=7;Weight=67},
+ @{Label='低头 / Shy';Row=5;Weight=67},
+ @{Label='跳跃 / Jump';Row=4;Weight=67}
 )
 $script:actionActive=$false
 $script:nextIdle=[DateTime]::Now.AddSeconds((Get-Random -Minimum 7 -Maximum 11))
@@ -55,7 +56,7 @@ function Play-Action([int]$Row,[int]$Milliseconds,[int]$Loops=1){
  $script:nextIdle=[DateTime]::Now.AddSeconds((Get-Random -Minimum 7 -Maximum 11))
  $cat.Source=$frames["$Row,0"]
 }
-function Select-IdleRow([int]$Roll=(Get-Random -Minimum 0 -Maximum 100)){
+function Select-IdleRow([int]$Roll=(Get-Random -Minimum 0 -Maximum 600)){
  foreach($action in $idleActions){if($Roll -lt $action.Weight){return $action.Row};$Roll-=$action.Weight}
  throw 'Invalid idle action roll'
 }
@@ -181,7 +182,7 @@ if($SelfTest){
    if($frame -isnot [Windows.Media.Imaging.CroppedBitmap] -or $frame.SourceRect.X -ne $c*192 -or $frame.SourceRect.Y -ne $r*208){throw 'Animation no longer matches atlas cell'}
   }}
   $distribution=@{}
-  foreach($roll in 0..99){$r=Select-IdleRow $roll;$distribution[[string]$r]++}
+  foreach($roll in 0..599){$r=Select-IdleRow $roll;$distribution[[string]$r]++}
   foreach($action in $idleActions){if($distribution[[string]$action.Row] -ne $action.Weight){throw 'Idle weights failed'}}
   foreach($item in $actionMenu.Items){
    $item.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.MenuItem]::ClickEvent)))
